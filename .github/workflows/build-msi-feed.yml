@@ -1,0 +1,72 @@
+name: Build MSI feed
+
+# Navigation Almanac shows navigational warnings (NAVAREA / NAVTEX). No single
+# free source publishes them worldwide, so `feed/` scrapes each coordinator and
+# bundles the result into one encrypted, compressed blob the app downloads.
+#
+# This runs here rather than on a server for two reasons: the key lives in a
+# repository secret instead of on a box someone has to maintain, and the commit
+# this job makes is itself the publish step — GitHub Pages serves msi/ directly.
+#
+# The job is deliberately allowed to publish a partial feed. Coordinators go
+# down; a feed missing one area is useful, and the manifest says which sources
+# failed so the app can tell the user "source unavailable" rather than showing
+# an empty area, which a mariner would read as "nothing in force".
+
+on:
+  schedule:
+    - cron: "7 * * * *"      # hourly, off the hour to avoid the stampede
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: msi-feed
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: feed/go.sum
+
+      - name: Build the feed
+        env:
+          NAVWARN_KEY: ${{ secrets.NAVWARN_KEY }}
+        run: |
+          if [ -z "$NAVWARN_KEY" ]; then
+            echo "::error::NAVWARN_KEY is not set. Generate one with 'go run ./feed -genkey'"
+            echo "and add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          cd feed
+          go build -o /tmp/feed .
+          /tmp/feed -out ../msi
+
+      - name: Publish if the warnings changed
+        run: |
+          if git diff --quiet -- msi; then
+            echo "no change in the warnings; nothing to publish"
+            exit 0
+          fi
+          summary=$(python3 - <<'PY'
+          import json
+          m = json.load(open("msi/manifest.json"))
+          live = sum(1 for s in m["sources"].values() if s["status"] == "ok")
+          print(f'build {m["build"]}: {m["warnings"]} warnings, {live} sources live')
+          PY
+          )
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add msi
+          git commit -m "msi: $summary"
+          git push
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
