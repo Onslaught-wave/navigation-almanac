@@ -1,2 +1,5 @@
 # The built binary; CI and cron build it from source.
 feed
+
+# The build key. Never committed — it is the same key the app carries.
+.navwarn-key
