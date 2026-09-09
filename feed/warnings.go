@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -33,14 +34,14 @@ const userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 
 // Warning is one navigational warning, normalised across every coordinator.
 type Warning struct {
-	Source      string      `json:"source"`
-	Area        string      `json:"area"` // NAVAREA in roman numerals, or a coastal series
-	Number      string      `json:"number"`
-	Year        int         `json:"year"`
-	Issued      string      `json:"issued"` // as published; formats differ per country
-	Text        string      `json:"text"`
+	Source      string       `json:"source"`
+	Area        string       `json:"area"` // NAVAREA in roman numerals, or a coastal series
+	Number      string       `json:"number"`
+	Year        int          `json:"year"`
+	Issued      string       `json:"issued"` // as published; formats differ per country
+	Text        string       `json:"text"`
 	Coordinates [][2]float64 `json:"coordinates"` // decimal degrees, [lat, lon]
-	URL         string      `json:"url"`
+	URL         string       `json:"url"`
 }
 
 // Source is one coordinator's parser.
@@ -53,16 +54,27 @@ type Source struct {
 // Blocked records the coordinators a plain HTTP client cannot read, and why.
 // Kept in code rather than in a document so the published manifest always
 // tells the truth about what is missing.
+// Each note records what was actually established, not a guess. Two of these
+// are dead ends rather than obstacles: India's file has not been updated since
+// July 2025, and South Africa publishes no radio warnings at all.
 var Blocked = []struct{ Name, Areas, Why string }{
-	{"brazil", "V", "Cloudflare bot check; the data itself is good JSON " +
-		"(avradio_NN.json, bilingual, with coordinates) but only a real browser gets it"},
-	{"newzealand", "XIV", "Cloudflare bot check on maritimenz.govt.nz"},
-	{"japan", "XI", "kaiho.mlit.go.jp returns 403; current URL not established"},
-	{"india", "VIII", "Liferay document library — warnings are PDFs, no direct feed"},
-	{"chile", "XV", "shoa.cl radioavisos endpoint returns 500"},
-	{"argentina", "VI", "RadioavisosNauticos.asp serves the site home page"},
-	{"southafrica", "VII", "monthly Notices to Mariners PDFs only, no per-warning feed"},
-	{"russia", "XIII, XX, XXI", "structure.mil.ru and nsr.rosatom.ru time out"},
+	{"brazil", "V", "Cloudflare managed challenge (cf-mitigated: challenge) on both " +
+		"www. and assets.marinha.mil.br — no header or TLS trick passes it. The data " +
+		"behind it is the best of any coordinator: avradio_NN.json, bilingual, with " +
+		"decimal coordinates, refreshed continuously. Needs a headless browser."},
+	{"newzealand", "XIV", "Cloudflare managed challenge on maritimenz.govt.nz. " +
+		"Needs a headless browser."},
+	{"india", "VIII", "the 'in-force' PDF at hydrobharat.gov.in was last modified " +
+		"2025-07-07 and still says 'as on 07 Jul 2025' — over a year stale. Its text " +
+		"is also drawn with per-page subsetted fonts, so reading it would need a full " +
+		"PDF resource graph; not worth it for frozen data."},
+	{"argentina", "VI", "the SHN radioavisos page carries no warning list — only an " +
+		"explanation of the service. No listing found anywhere on hidro.gov.ar."},
+	{"southafrica", "VII", "SANHO's 'NAVAREA VII Messages' page is navigation only. " +
+		"It publishes monthly Notices to Mariners PDFs, which are a different product " +
+		"from radio navigational warnings — there is no warning feed to read."},
+	{"russia", "XIII, XX, XXI", "structure.mil.ru and nsr.rosatom.ru time out from " +
+		"here; may be reachable from other networks, untested"},
 }
 
 // Sources is every coordinator with a working parser, in publication order.
@@ -76,6 +88,8 @@ var Sources = []Source{
 	{"canada", "XVII, XVIII", fetchCanada},
 	{"peru", "XVI", fetchPeru},
 	{"pakistan", "IX", fetchPakistan},
+	{"japan", "XI", fetchJapan},
+	{"chile", "XV", fetchChile},
 	{"usa", "IV, XII + HYDRO", fetchUSA},
 }
 
@@ -89,12 +103,31 @@ func NewClient() *Client {
 	return &Client{http: &http.Client{Timeout: 60 * time.Second}}
 }
 
+// Post sends a form body — one coordinator's index is only reachable that way.
+func (c *Client) Post(rawURL, form, referer string) ([]byte, error) {
+	return c.do("POST", rawURL, form, "text/xml,*/*", referer)
+}
+
 func (c *Client) Get(rawURL string, accept string) ([]byte, error) {
+	return c.do("GET", rawURL, "", accept, "")
+}
+
+func (c *Client) do(method, rawURL, body, accept, referer string) ([]byte, error) {
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest("GET", rawURL, nil)
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req, err := http.NewRequest(method, rawURL, reader)
 		if err != nil {
 			return nil, err
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if referer != "" {
+			req.Header.Set("Referer", referer)
 		}
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
@@ -183,9 +216,9 @@ var (
 )
 
 type fix struct {
-	pos   int
-	deg   float64
-	hemi  byte
+	pos  int
+	deg  float64
+	hemi byte
 }
 
 // parseCoordinates pulls decimal positions out of a warning's free text.
@@ -745,6 +778,141 @@ func fetchPakistan(c *Client) ([]Warning, error) {
 		return nil, fmt.Errorf("pakistan: no warning files fetched")
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------- Japan (XI)
+
+// The Japanese Hydrographic and Oceanographic Department publishes through a
+// pair of CGI endpoints its own page calls: one returns the year's index as
+// XML, the other renders a single warning. Warnings stay in force across the
+// new year, so the previous year is fetched too.
+func fetchJapan(c *Client) ([]Warning, error) {
+	const cgi = "https://www1.kaiho.mlit.go.jp/TUHO/keiho/cgi/"
+	const referer = "https://www1.kaiho.mlit.go.jp/TUHO/keiho/navarea11_en.html"
+
+	type member struct {
+		Category string `xml:"categoly"` // the site's own spelling
+		Number   string `xml:"number"`
+		Tana     string `xml:"tana"`
+		Title    string `xml:"title"`
+	}
+	var out []Warning
+	year := time.Now().UTC().Year()
+	// The index is per year but lists only what is still in force, so the
+	// archive is small — and it reaches back further than one might expect:
+	// warnings from 2019 are still current. Taking only the last year or two
+	// would silently drop live warnings, so the whole range the site offers
+	// is walked.
+	for y := 2016; y <= year; y++ {
+		body, err := c.Post(cgi+"warnings.cgi",
+			fmt.Sprintf("YEAR=%d&TYPE=NAVAREA11&LANG=EG", y), referer)
+		if err != nil {
+			continue
+		}
+		var doc struct {
+			Members []member `xml:"Member"`
+		}
+		if err := xml.Unmarshal(body, &doc); err != nil {
+			continue
+		}
+		for _, m := range doc.Members {
+			url := fmt.Sprintf("%sdisp_warnings.cgi?TYPE=NAVAREA11&TANA=%s&LANG=EG", cgi, m.Tana)
+			text := strings.TrimSpace(m.Title)
+			if page, err := c.Get(url, ""); err == nil {
+				if full := strings.TrimSpace(collapseBlank(textOf(page))); len(full) > len(text) {
+					text = full
+				}
+			}
+			if m.Category != "" {
+				text = m.Category + "\n" + text
+			}
+			out = append(out, newWarning("japan", "XI",
+				fmt.Sprintf("%s/%02d", m.Number, y%100), y, "", text, url))
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("japan: no warnings returned by warnings.cgi")
+	}
+	return out, nil
+}
+
+var reBlankLines = regexp.MustCompile(`\n\s*\n+`)
+
+func collapseBlank(s string) string { return reBlankLines.ReplaceAllString(s, "\n") }
+
+// ---------------------------------------------------------------- Chile (XV)
+
+// SHOA publishes NAVAREA XV as a generated PDF and nothing else. The text is
+// in literal strings with an ASCII encoding, so it extracts cleanly — but the
+// result is checked before use, because a PDF that switched to subsetted fonts
+// would otherwise be published as a page of mojibake labelled "warning".
+func fetchChile(c *Client) ([]Warning, error) {
+	const u = "https://www.shoa.cl/php/radioAvisosPDF.php?documento=NAVAREA&tipo=3"
+	body, err := c.Get(u, "")
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.HasPrefix(body, []byte("%PDF")) {
+		return nil, fmt.Errorf("chile: expected a PDF, got %q", firstBytes(body, 40))
+	}
+	text := pdfText(body)
+	if !pdfLooksExtractable(text) {
+		return nil, fmt.Errorf("chile: the PDF's text is not extractable — " +
+			"it has probably switched to subsetted fonts")
+	}
+
+	reRef := regexp.MustCompile(`NAVAREA XV\s+(\d{3,4})`)
+	marks := reRef.FindAllStringSubmatchIndex(text, -1)
+	// The document opens with an "in force" index that repeats every number;
+	// warnings proper start at the first "YEAR NNNN" heading.
+	year := time.Now().UTC().Year()
+	reYearHead := regexp.MustCompile(`YEAR\s+(\d{4})`)
+
+	best := map[string]string{}
+	yearOf := map[string]int{}
+	for i, m := range marks {
+		end := len(text)
+		if i+1 < len(marks) {
+			end = marks[i+1][0]
+		}
+		ref := text[m[2]:m[3]]
+		chunk := strings.TrimSpace(text[m[0]:end])
+		if len(chunk) <= len(best[ref]) {
+			continue
+		}
+		best[ref] = chunk
+		// The nearest preceding "YEAR nnnn" heading gives the warning's year.
+		yearOf[ref] = year
+		if head := reYearHead.FindAllStringSubmatchIndex(text[:m[0]], -1); len(head) > 0 {
+			last := head[len(head)-1]
+			if y, err := strconv.Atoi(text[last[2]:last[3]]); err == nil && y > 2000 {
+				yearOf[ref] = y
+			}
+		}
+	}
+
+	refs := make([]string, 0, len(best))
+	for ref := range best {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	var out []Warning
+	for _, ref := range refs {
+		y := yearOf[ref]
+		out = append(out, newWarning("chile", "XV",
+			fmt.Sprintf("%s/%02d", ref, y%100), y, "", best[ref], u))
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("chile: no NAVAREA XV references in the PDF text")
+	}
+	return out, nil
+}
+
+func firstBytes(b []byte, n int) string {
+	if len(b) > n {
+		b = b[:n]
+	}
+	return string(b)
 }
 
 // ---------------------------------------------------------------- USA (IV, XII)
