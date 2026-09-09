@@ -16,7 +16,21 @@ go run . -genkey                 # print a new key, once
 
 ## What it publishes
 
-`msi/manifest.json` (~2.6 KB, plain) and `msi/warnings.bin` (~200 KB).
+`msi/manifest.json` (~2.6 KB, plain) and `msi/warnings.bin` (~200 KB), served at
+
+```
+https://onslaught-wave.github.io/navigation-almanac/msi/manifest.json
+https://onslaught-wave.github.io/navigation-almanac/msi/warnings.bin
+```
+
+Neither file is committed — `msi/` is in `.gitignore`. The hourly workflow
+builds them and uploads the whole site as a Pages artifact, so the history
+stays clean. That matters more than it sounds: the blob is AES-GCM output and
+therefore incompressible, so git could not delta it, and every hourly publish
+would leave a fresh 200 KB object in the repository forever.
+
+The consequence is that the workflow publishes the *whole* site, so anything
+committed here goes live on the next hourly run rather than immediately.
 
 The app polls the manifest, compares `content` with what it already holds, and
 downloads the blob only when that changes. `sha256` covers the blob itself and
@@ -40,14 +54,21 @@ go run . -genkey
 ```
 
 Put the hex value in the `NAVWARN_KEY` repository secret (Settings → Secrets and
-variables → Actions) and paste the printed Swift literal into the client. To run
-from cron on a server instead of Actions:
+variables → Actions) and paste the printed Swift literal into the client. The
+workflow also needs Settings → Pages → Source set to **GitHub Actions**.
+
+The key is fixed for the life of the format. Changing it strands every
+installed copy of the app on a bundle it can no longer open, so a rotation
+means shipping a release first and re-keying the feed only once that release is
+out. `WarningsFeedTests.testTheShippingKeyOpensABundleTheBuilderProduced`
+fails if the two ever drift apart.
+
+To run from cron on a server instead — same binary, publish however that host
+serves static files:
 
 ```
-0 * * * *  cd /srv/navigation-almanac && NAVWARN_KEY=… ./feed -out msi && git -C . add msi && git -C . commit -qm msi && git -C . push
+7 * * * *  cd /srv/navigation-almanac && NAVWARN_KEY=$(cat feed/.navwarn-key) ./feed -out /var/www/msi
 ```
-
-Rotating the key requires an app release, so treat it as long-lived.
 
 ## Sources
 
