@@ -917,41 +917,89 @@ func firstBytes(b []byte, n int) string {
 
 // ---------------------------------------------------------------- USA (IV, XII)
 
-// Machine-readable and permissively licensed — and, at the time of writing,
-// serving nothing newer than 2024-05-10 while returning HTTP 200. The staleness
-// check applied to every source is the reason this one is safe to include.
+// NGA's obvious route — the documented /broadcast-warn JSON API — returns
+// HTTP 200 with nothing newer than 2024-05-10, and has done for over two
+// years; its own /inforce list and its own website agree. Every guide to this
+// data points at that API, and every one of them is now wrong.
+//
+// The live publication is a set of daily plain-text bulletins listed by the
+// media endpoint, one per series, refreshed each afternoon. They carry the
+// same messages in broadcast form, which is what the coordinator actually
+// transmits.
+//
+// The file list is fetched rather than hard-coded because the storage key
+// carries a content id that will eventually change.
 func fetchUSA(c *Client) ([]Warning, error) {
-	const base = "https://msi.nga.mil/api/publications/broadcast-warn"
-	body, err := c.Get(base+"?status=active&output=json", "application/json")
+	const media = "https://msi.nga.mil/api/media?type=Nav%20Warnings"
+	const download = "https://msi.nga.mil/api/publications/download?key=%s&type=view"
+
+	index, err := c.Get(media, "application/json")
 	if err != nil {
 		return nil, err
 	}
-	var doc struct {
-		Warnings []struct {
-			MsgYear   int    `json:"msgYear"`
-			MsgNumber int    `json:"msgNumber"`
-			NavArea   string `json:"navArea"`
-			Text      string `json:"text"`
-			IssueDate string `json:"issueDate"`
-		} `json:"broadcast-warn"`
+	var files []struct {
+		DisplayName string `json:"displayName"`
+		S3Key       string `json:"s3Key"`
+		Extension   string `json:"fileExtension"`
 	}
-	if err := json.Unmarshal(body, &doc); err != nil {
+	if err := json.Unmarshal(index, &files); err != nil {
 		return nil, err
 	}
-	names := map[string]string{"4": "IV", "12": "XII", "A": "HYDROARC",
-		"P": "HYDROPAC", "C": "HYDROLANT"}
+
+	// "NAVAREA IV" -> "IV"; HYDROLANT and friends stay as they are.
+	area := func(display string) string {
+		return strings.TrimSpace(strings.TrimPrefix(display, "NAVAREA"))
+	}
+	// A message opens with its series and number on a line of its own; the
+	// date-time group sits on the line before it.
+	reHead := regexp.MustCompile(`^(NAVAREA [IVX]+|HYDROLANT|HYDROPAC|HYDROARC)\s+(\d+/\d+)\.?\s*$`)
+	reDTG := regexp.MustCompile(`^\d{6}Z\s+[A-Z]{3}\s+\d{2}\s*$`)
+
 	var out []Warning
-	for _, r := range doc.Warnings {
-		area := names[r.NavArea]
-		if area == "" {
-			area = r.NavArea
+	for _, f := range files {
+		if !strings.EqualFold(f.Extension, "txt") {
+			continue // the set also holds a Google Earth overlay
 		}
-		out = append(out, newWarning("usa", area,
-			fmt.Sprintf("%d/%02d", r.MsgNumber, r.MsgYear%100),
-			r.MsgYear, r.IssueDate, r.Text, base))
+		url := fmt.Sprintf(download, f.S3Key)
+		body, err := c.Get(url, "")
+		if err != nil {
+			continue
+		}
+		src := lines(string(body))
+
+		starts := []int{}
+		for i, l := range src {
+			if reHead.MatchString(l) {
+				starts = append(starts, i)
+			}
+		}
+		for n, at := range starts {
+			end := len(src)
+			if n+1 < len(starts) {
+				end = starts[n+1]
+			}
+			head := reHead.FindStringSubmatch(src[at])
+			issued := ""
+			// Walk back over the previous message's tail to its date-time group.
+			for j := at - 1; j >= 0 && j > at-3; j-- {
+				if reDTG.MatchString(src[j]) {
+					issued = src[j]
+					break
+				}
+			}
+			text := strings.Join(src[at:end], "\n")
+			if issued != "" {
+				// Trim the next message's DTG off the end of this one.
+				if last := end - 1; last > at && reDTG.MatchString(src[last]) {
+					text = strings.Join(src[at:last], "\n")
+				}
+			}
+			out = append(out, newWarning("usa", area(f.DisplayName), head[2],
+				yearFrom(head[2]), issued, text, url))
+		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("usa: no warnings in response")
+		return nil, fmt.Errorf("usa: no messages parsed from the daily bulletins")
 	}
 	return out, nil
 }
