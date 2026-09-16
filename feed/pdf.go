@@ -41,7 +41,7 @@ func pdfText(data []byte) string {
 		}
 		// Text-positioning operators are where line breaks live; without them
 		// every warning in the file runs into one paragraph.
-		for _, line := range strings.Split(string(body), "\n") {
+		for _, line := range strings.Split(decodeText(body), "\n") {
 			var text strings.Builder
 			for _, lit := range reLiteral.FindAllString(line, -1) {
 				text.WriteString(unescapePDF(lit[1 : len(lit)-1]))

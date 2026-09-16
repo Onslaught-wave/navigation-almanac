@@ -173,7 +173,7 @@ var (
 // textOf turns HTML into plain text while keeping line structure — warnings
 // are line-oriented and collapsing them loses the message boundaries.
 func textOf(b []byte) string {
-	s := reScriptStyle.ReplaceAllString(string(b), " ")
+	s := reScriptStyle.ReplaceAllString(decodeText(b), " ")
 	s = reBreak.ReplaceAllString(s, "\n")
 	s = reTag.ReplaceAllString(s, " ")
 	s = unescapeEntities(s)
@@ -220,7 +220,11 @@ func lines(s string) []string {
 // 077-09-20.2W). Both appear, sometimes within one country.
 var (
 	reDMS = regexp.MustCompile(`(?i)(\d{1,3})[-\x{00B0}]\s?(\d{1,2})[-']\s?(\d{1,2}(?:[.,]\d+)?)"?\s*([NSEW])`)
-	reDDM = regexp.MustCompile(`(?i)(\d{1,3})[-\x{00B0}]\s?(\d{1,2}(?:[.,]\d+)?)\s*([NSEW])`)
+	// Canada separates degrees from minutes with a space rather than a hyphen
+	// — "71 21.06N 096 53.90W" — so a single space is accepted too. The
+	// hemisphere letter must follow the minutes immediately, which is what
+	// keeps chart numbers and distances out.
+	reDDM = regexp.MustCompile(`(?i)(\d{1,3})[-\x{00B0} ](\d{1,2}(?:[.,]\d+)?)\s*([NSEW])`)
 )
 
 type fix struct {
@@ -324,9 +328,15 @@ func yearFrom(ref string) int {
 func newWarning(source, area, number string, year int, issued, text, u string) Warning {
 	// Always an array, never null: the client decodes this field unconditionally
 	// and a nil slice would marshal to JSON null.
-	coords := parseCoordinates(text)
-	if coords == nil {
-		coords = [][2]float64{}
+	// Merging a warning's language variants can repeat the same position, and
+	// two identical markers on a chart are noise.
+	coords := [][2]float64{}
+	seen := map[[2]float64]bool{}
+	for _, p := range parseCoordinates(text) {
+		if !seen[p] {
+			seen[p] = true
+			coords = append(coords, p)
+		}
 	}
 	body := strings.TrimSpace(text)
 	// Six coordinators publish no date field at all and only carry the
@@ -356,11 +366,12 @@ func fetchFrance(c *Client) ([]Warning, error) {
 		var doc struct {
 			Embedded struct {
 				Items []struct {
-					NameOfSeries    string `json:"nameOfSeries"`
-					WarningNumber   int    `json:"warningNumber"`
-					Year            int    `json:"year"`
-					PublicationTime string `json:"publicationTime"`
-					FeatureParts    []struct {
+					NameOfSeries             string `json:"nameOfSeries"`
+					WarningHazardTypeGeneral string `json:"warningHazardTypeGeneral"`
+					WarningNumber            int    `json:"warningNumber"`
+					Year                     int    `json:"year"`
+					PublicationTime          string `json:"publicationTime"`
+					FeatureParts             []struct {
 						Information map[string]string `json:"information"`
 						Geometries  []struct {
 							Coordinates json.RawMessage `json:"coordinates"`
@@ -384,16 +395,25 @@ func fetchFrance(c *Client) ([]Warning, error) {
 			var parts []string
 			coords := [][2]float64{}
 			for _, part := range it.FeatureParts {
-				if v := strings.TrimSpace(part.Information["en"]); v != "" {
-					parts = append(parts, v)
-				} else if v := strings.TrimSpace(part.Information["fr"]); v != "" {
-					parts = append(parts, v)
-				}
+				// The two language fields are not translations of each other.
+				// Either can be the shorter, either can be the one carrying the
+				// position, and the "en" field is frequently still in French.
+				// Picking one silently dropped vessel names and — worse —
+				// whole positions, so both are merged and nothing is lost.
+				parts = append(parts, mergeLines(
+					strings.TrimSpace(part.Information["fr"]),
+					strings.TrimSpace(part.Information["en"])))
 				for _, g := range part.Geometries {
 					coords = append(coords, flattenGeoJSON(g.Coordinates)...)
 				}
 			}
-			text := strings.Join(parts, "\n\n")
+			text := strings.TrimSpace(strings.Join(parts, "\n\n"))
+			// France classifies every warning, and some of them carry nothing
+			// else: a newly discovered danger is published as a bare position,
+			// which on its own tells a navigator nothing about what is there.
+			if kind := hazardLabel(it.WarningHazardTypeGeneral); kind != "" {
+				text = kind + "\n" + text
+			}
 			w := newWarning("france", it.NameOfSeries,
 				fmt.Sprintf("%d/%02d", it.WarningNumber, it.Year%100),
 				it.Year, it.PublicationTime, text, base)
@@ -485,7 +505,7 @@ func fetchUK(c *Client) ([]Warning, error) {
 	if err != nil {
 		return nil, err
 	}
-	html := string(body)
+	html := decodeText(body)
 	cell := func(name string, i int) string {
 		re := regexp.MustCompile(fmt.Sprintf(`(?s)<td id="%s_%d"[^>]*>(.*?)</td>`, name, i))
 		if m := re.FindStringSubmatch(html); m != nil {
@@ -567,6 +587,8 @@ func fetchSweden(c *Client) ([]Warning, error) {
 	reSection := regexp.MustCompile(`<div\s+id="display-area-\d+"`)
 	reHeading := regexp.MustCompile(`(?s)<h\d[^>]*>(.*?)</h\d>`)
 	reWarn := regexp.MustCompile(`([A-Z][A-Z ]*NAV WARN)\s*(\d+/\d+)`)
+	// "130830 UTC SEP 26" or "281030 UTC AUG" — the year is often absent.
+	reSwedenDTG := regexp.MustCompile(`(?i)\b\d{6}\s*UTC\s+[A-Z]{3}(?:\s+\d{2})?\b`)
 
 	var out []Warning
 	for _, page := range pages {
@@ -575,7 +597,7 @@ func fetchSweden(c *Client) ([]Warning, error) {
 			return nil, err
 		}
 		// The opening tag is split across lines, so sections are cut on the id.
-		parts := reSection.Split(string(body), -1)
+		parts := reSection.Split(decodeText(body), -1)
 		for _, block := range parts[1:] {
 			if idx := strings.Index(block, "<div"); idx > 0 {
 				block = block[:idx]
@@ -586,17 +608,42 @@ func fetchSweden(c *Client) ([]Warning, error) {
 			}
 			text := textOf([]byte(block))
 			marks := reWarn.FindAllStringSubmatchIndex(text, -1)
+			// Each warning appears twice in a section: once as a short index
+			// entry that carries the date-time group, and once in full without
+			// it. Neither half is complete, so they are merged — the longer
+			// text, and the date from whichever variant has one.
+			type merged struct{ text, issued string }
+			best := map[string]merged{}
+			order := []string{}
 			for i, m := range marks {
 				end := len(text)
 				if i+1 < len(marks) {
 					end = marks[i+1][0]
 				}
-				area := page.tag
-				if sea != "" {
-					area = page.tag + ": " + sea
+				ref := text[m[4]:m[5]]
+				chunk := strings.TrimSpace(text[m[0]:end])
+				prev, seen := best[ref]
+				if !seen {
+					order = append(order, ref)
 				}
-				out = append(out, newWarning("sweden", area, text[m[4]:m[5]],
-					yearFrom(text[m[4]:m[5]]), "", strings.TrimSpace(text[m[0]:end]), page.url))
+				next := merged{text: prev.text, issued: prev.issued}
+				if len(chunk) > len(next.text) {
+					next.text = chunk
+				}
+				if next.issued == "" {
+					if m := reSwedenDTG.FindString(chunk); m != "" {
+						next.issued = m
+					}
+				}
+				best[ref] = next
+			}
+			area := page.tag
+			if sea != "" {
+				area = page.tag + ": " + sea
+			}
+			for _, ref := range order {
+				out = append(out, newWarning("sweden", area, ref, yearFrom(ref),
+					best[ref].issued, best[ref].text, page.url))
 			}
 		}
 	}
@@ -656,6 +703,7 @@ func fetchAustralia(c *Client) ([]Warning, error) {
 	text := textOf(body)
 	reRef := regexp.MustCompile(`((?:NAVAREA X|AUSCOAST)[A-Z ]*)\s*(\d+/\d+)`)
 	var out []Warning
+	seen := map[string]bool{}
 	for _, chunk := range strings.Split(text, "SECURITE")[1:] {
 		if idx := strings.Index(chunk, "NNNN"); idx >= 0 {
 			chunk = chunk[:idx]
@@ -668,8 +716,14 @@ func fetchAustralia(c *Client) ([]Warning, error) {
 		if strings.Contains(m[1], "NAVAREA") {
 			area = "X"
 		}
-		out = append(out, newWarning("australia", area, m[2], yearFrom(m[2]), "",
-			strings.TrimSpace(chunk), u))
+		body := strings.TrimSpace(chunk)
+		// A warning can appear in more than one section of the page; the same
+		// message twice is noise, not two warnings.
+		if seen[area+m[2]+body] {
+			continue
+		}
+		seen[area+m[2]+body] = true
+		out = append(out, newWarning("australia", area, m[2], yearFrom(m[2]), "", body, u))
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("australia: no SECURITE blocks found")
@@ -692,7 +746,7 @@ func fetchCanada(c *Client) ([]Warning, error) {
 	reBody := regexp.MustCompile(`(?s)<p>(.*?)</p>`)
 
 	var out []Warning
-	for _, block := range reTable.Split(string(body), -1)[1:] {
+	for _, block := range reTable.Split(decodeText(body), -1)[1:] {
 		if idx := strings.Index(block, "</table>"); idx >= 0 {
 			block = block[:idx]
 		}
@@ -700,10 +754,16 @@ func fetchCanada(c *Client) ([]Warning, error) {
 		if m == nil {
 			continue
 		}
-		text := ""
-		if b := reBody.FindStringSubmatch(block); b != nil {
-			text = strings.TrimSpace(textOf([]byte(b[1])))
+		// A warning can run to several paragraphs, and the first is often only
+		// a heading — "SHOALS LOCATED AT:" with the positions in the next one.
+		// Taking just the first dropped the positions entirely.
+		var paras []string
+		for _, b := range reBody.FindAllStringSubmatch(block, -1) {
+			if t := strings.TrimSpace(textOf([]byte(b[1]))); t != "" {
+				paras = append(paras, t)
+			}
 		}
+		text := strings.Join(paras, "\n")
 		fields := strings.Fields(m[1])
 		year, _ := strconv.Atoi(m[3])
 		out = append(out, newWarning("canada", fields[len(fields)-1],
@@ -772,7 +832,7 @@ func fetchPakistan(c *Client) ([]Warning, error) {
 	reHref := regexp.MustCompile(`href="([^"]*custom_uploaded_warnings_for_navarea/[^"]+\.txt)"`)
 	seen := map[string]bool{}
 	var hrefs []string
-	for _, m := range reHref.FindAllStringSubmatch(string(body), -1) {
+	for _, m := range reHref.FindAllStringSubmatch(decodeText(body), -1) {
 		if !seen[m[1]] {
 			seen[m[1]] = true
 			hrefs = append(hrefs, m[1])
@@ -802,15 +862,18 @@ func fetchPakistan(c *Client) ([]Warning, error) {
 		}
 		name := decoded[strings.LastIndex(decoded, "/")+1:]
 		number, issued, year := name, "", 0
-		if m := reRef.FindStringSubmatch(string(text)); m != nil {
+		if m := reRef.FindStringSubmatch(decodeText(text)); m != nil {
 			number = m[1]
 		}
 		if m := reStamp.FindStringSubmatch(name); m != nil {
 			year, _ = strconv.Atoi(m[1])
 			issued = m[1] + "-" + m[2] + "-" + m[3]
 		}
+		if year == 0 {
+			year = yearFrom(number) // hand-named files carry the date only in the text
+		}
 		out = append(out, newWarning("pakistan", "IX", number, year, issued,
-			string(text), ref.String()))
+			decodeText(text), ref.String()))
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("pakistan: no warning files fetched")
@@ -1003,7 +1066,7 @@ func fetchUSA(c *Client) ([]Warning, error) {
 		if err != nil {
 			continue
 		}
-		src := lines(string(body))
+		src := lines(decodeText(body))
 
 		starts := []int{}
 		for i, l := range src {
@@ -1040,4 +1103,39 @@ func fetchUSA(c *Client) ([]Warning, error) {
 		return nil, fmt.Errorf("usa: no messages parsed from the daily bulletins")
 	}
 	return out, nil
+}
+
+// mergeLines joins two versions of the same message, keeping every line that
+// appears in either and dropping the repeats. Comparison ignores case and
+// spacing so a line reworded only in punctuation is not printed twice.
+func mergeLines(primary, secondary string) string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			key := strings.ToLower(reSpaces.ReplaceAllString(line, " "))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, line)
+		}
+	}
+	add(primary)
+	add(secondary)
+	return strings.Join(out, "\n")
+}
+
+// hazardLabel turns France's hazard enum into something readable —
+// NEWLY_DISCOVERED_DANGERS becomes "NEWLY DISCOVERED DANGERS".
+func hazardLabel(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" || strings.EqualFold(code, "OTHER") {
+		return ""
+	}
+	return strings.ReplaceAll(code, "_", " ")
 }
