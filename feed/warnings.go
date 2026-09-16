@@ -38,7 +38,8 @@ type Warning struct {
 	Area        string       `json:"area"` // NAVAREA in roman numerals, or a coastal series
 	Number      string       `json:"number"`
 	Year        int          `json:"year"`
-	Issued      string       `json:"issued"` // as published; formats differ per country
+	Issued      string       `json:"issued"`              // as published; formats differ per country
+	IssuedAt    string       `json:"issued_at,omitempty"` // same instant, RFC 3339 UTC; absent if unknown
 	Text        string       `json:"text"`
 	Coordinates [][2]float64 `json:"coordinates"` // decimal degrees, [lat, lon]
 	URL         string       `json:"url"`
@@ -184,13 +185,20 @@ var entities = strings.NewReplacer(
 	"&#39;", "'", "&apos;", "'", "&nbsp;", " ", "&ndash;", "–", "&mdash;", "—",
 )
 
-var reNumericEntity = regexp.MustCompile(`&#(\d+);`)
+// Both forms occur: Sweden's NAVTEX page carries its line breaks as &#xD;&#xA;,
+// which stayed in the text verbatim while only the decimal form was handled.
+var reNumericEntity = regexp.MustCompile(`&#(x[0-9A-Fa-f]+|\d+);`)
 
 func unescapeEntities(s string) string {
 	s = entities.Replace(s)
 	return reNumericEntity.ReplaceAllStringFunc(s, func(m string) string {
-		n, err := strconv.Atoi(m[2 : len(m)-1])
-		if err != nil || n > 0x10FFFF {
+		digits := m[2 : len(m)-1]
+		base := 10
+		if digits[0] == 'x' || digits[0] == 'X' {
+			digits, base = digits[1:], 16
+		}
+		n, err := strconv.ParseInt(digits, base, 32)
+		if err != nil || n <= 0 || n > 0x10FFFF {
 			return m
 		}
 		return string(rune(n))
@@ -320,7 +328,12 @@ func newWarning(source, area, number string, year int, issued, text, u string) W
 	if coords == nil {
 		coords = [][2]float64{}
 	}
-	return Warning{source, area, number, year, issued, strings.TrimSpace(text), coords, u}
+	body := strings.TrimSpace(text)
+	// Six coordinators publish no date field at all and only carry the
+	// broadcast date-time group inside the message, so the body is searched
+	// when the source itself gave nothing.
+	return Warning{source, area, number, year, issued, normalizeIssued(issued, body, year),
+		body, coords, u}
 }
 
 // ---------------------------------------------------------------- France (II + coastal)
