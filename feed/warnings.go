@@ -505,9 +505,14 @@ func fetchUK(c *Client) ([]Warning, error) {
 		text := cell("Description", i)
 		panel := regexp.MustCompile(fmt.Sprintf(`(?s)id="collapse_%d"(.*?)</tbody>`, i))
 		if m := panel.FindStringSubmatch(html); m != nil {
+			body := m[1]
+			// The match starts inside the opening tag, so the rest of its
+			// attributes would otherwise be read as warning text.
+			if idx := strings.Index(body, ">"); idx >= 0 {
+				body = body[idx+1:]
+			}
 			// The panel runs to the next row; cut it there rather than with a
 			// lookahead, which RE2 does not have.
-			body := m[1]
 			if idx := strings.Index(body, "<tr "); idx > 0 {
 				body = body[:idx]
 			}
@@ -515,6 +520,9 @@ func fetchUK(c *Client) ([]Warning, error) {
 				text = full
 			}
 		}
+		// The panel repeats the series, reference and time that already head
+		// the record; drop them so the body starts at the message itself.
+		text = trimRepeatedHeader(text, ref, cell("DateTimeGroupRnwFormat", i))
 		area := "UK Coastal"
 		if strings.HasPrefix(strings.ToUpper(ref), "NAVAREA") {
 			area = "I"
@@ -534,6 +542,23 @@ func fetchUK(c *Client) ([]Warning, error) {
 // The Baltic NAVTEX page carries Danish, German and Baltic-wide warnings
 // alongside the Swedish ones, already grouped by named sea area — which gives
 // area filtering without parsing a single coordinate.
+// trimRepeatedHeader drops leading lines that only restate the warning's own
+// reference or time, which several pages print again above the message body.
+func trimRepeatedHeader(text, ref, dtg string) string {
+	known := map[string]bool{strings.ToUpper(ref): true, strings.ToUpper(dtg): true}
+	for _, field := range strings.Fields(ref) {
+		if strings.EqualFold(field, "NAVAREA") {
+			known["NAVAREA 1"] = true
+			known["NAVAREA I"] = true
+		}
+	}
+	out := lines(text)
+	for len(out) > 0 && known[strings.ToUpper(strings.TrimSpace(out[0]))] {
+		out = out[1:]
+	}
+	return strings.Join(out, "\n")
+}
+
 func fetchSweden(c *Client) ([]Warning, error) {
 	pages := []struct{ url, tag string }{
 		{"https://navvarn.sjofartsverket.se/en/Navigationsvarningar/Navtex", "NAVTEX"},
