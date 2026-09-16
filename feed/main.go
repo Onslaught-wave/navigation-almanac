@@ -77,11 +77,11 @@ type payload struct {
 
 func main() {
 	var (
-		out     = flag.String("out", "../msi", "directory to publish into")
-		only    = flag.String("only", "", "comma-separated source names")
-		keyHex  = flag.String("key", "", "hex key; defaults to $NAVWARN_KEY")
-		genkey  = flag.Bool("genkey", false, "print a fresh key and exit")
-		check   = flag.Bool("check", false, "fetch and report, publish nothing")
+		out    = flag.String("out", "../msi", "directory to publish into")
+		only   = flag.String("only", "", "comma-separated source names")
+		keyHex = flag.String("key", "", "hex key; defaults to $NAVWARN_KEY")
+		genkey = flag.Bool("genkey", false, "print a fresh key and exit")
+		check  = flag.Bool("check", false, "fetch and report, publish nothing")
 	)
 	flag.Parse()
 

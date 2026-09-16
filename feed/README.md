@@ -23,14 +23,33 @@ https://onslaught-wave.github.io/navigation-almanac/msi/manifest.json
 https://onslaught-wave.github.io/navigation-almanac/msi/warnings.bin
 ```
 
-Neither file is committed — `msi/` is in `.gitignore`. The hourly workflow
-builds them and uploads the whole site as a Pages artifact, so the history
-stays clean. That matters more than it sounds: the blob is AES-GCM output and
-therefore incompressible, so git could not delta it, and every hourly publish
-would leave a fresh 200 KB object in the repository forever.
+Neither file is committed to `main` — `msi/` is in `.gitignore`. That matters
+more than it sounds: the blob is AES-GCM output and therefore incompressible,
+so git cannot delta it, and an hourly commit would leave a fresh 200 KB object
+in the history forever, for data that is worthless as soon as the next build
+replaces it.
 
-The consequence is that the workflow publishes the *whole* site, so anything
-committed here goes live on the next hourly run rather than immediately.
+## How it is published
+
+`feed/deploy.sh` runs from cron on srv-int. It pulls `main` for the static
+pages, builds the bundle, and force-pushes everything as a **single-commit
+`gh-pages` branch** — rebuilt from scratch each run, so the published branch
+never accumulates history. GitHub Pages serves that branch.
+
+```
+7 * * * *  cd /srv/navigation-almanac && NAVWARN_KEY=$(cat feed/.navwarn-key) feed/deploy.sh >> /var/log/navwarn.log 2>&1
+```
+
+It stops before pushing when the warnings are unchanged, so Pages is only
+rebuilt when there is something new. Settings → Pages → Source must be
+**Deploy from a branch → `gh-pages` → `/`**.
+
+Anything committed to `main` — a site edit, the mirrored TLE set — goes live on
+the next run rather than immediately.
+
+GitHub Actions does not publish. `.github/workflows/check-msi-sources.yml` only
+fetches every source and fails if a parser breaks, which is the failure worth
+catching early.
 
 The app polls the manifest, compares `content` with what it already holds, and
 downloads the blob only when that changes. `sha256` covers the blob itself and
@@ -53,9 +72,8 @@ Generate once, keep it out of this repository:
 go run . -genkey
 ```
 
-Put the hex value in the `NAVWARN_KEY` repository secret (Settings → Secrets and
-variables → Actions) and paste the printed Swift literal into the client. The
-workflow also needs Settings → Pages → Source set to **GitHub Actions**.
+Keep the hex value on srv-int (the script reads `feed/.navwarn-key`, which is
+git-ignored) and paste the printed Swift literal into the client.
 
 The key is fixed for the life of the format. Changing it strands every
 installed copy of the app on a bundle it can no longer open, so a rotation
@@ -63,12 +81,8 @@ means shipping a release first and re-keying the feed only once that release is
 out. `WarningsFeedTests.testTheShippingKeyOpensABundleTheBuilderProduced`
 fails if the two ever drift apart.
 
-To run from cron on a server instead — same binary, publish however that host
-serves static files:
-
-```
-7 * * * *  cd /srv/navigation-almanac && NAVWARN_KEY=$(cat feed/.navwarn-key) ./feed -out /var/www/msi
-```
+srv-int needs push rights to the repository. A deploy key scoped to this one
+repository is the right credential — not an account-wide token.
 
 ## Sources
 

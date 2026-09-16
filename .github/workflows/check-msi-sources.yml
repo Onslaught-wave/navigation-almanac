@@ -1,0 +1,52 @@
+name: Check MSI sources
+
+# This does NOT publish. The feed is built and published by cron on srv-int
+# (feed/deploy.sh), which force-pushes a single-commit gh-pages branch.
+#
+# What runs here is a guard: every national coordinator publishes in its own
+# hand-written format, and any of them can change a page overnight. A parser
+# that quietly returns nothing is the dangerous failure — an empty NAVAREA is
+# indistinguishable, to a mariner, from an area with no warnings in force — so
+# this fetches every source and fails the job if one of them breaks.
+#
+# No key is needed: -check never seals or writes a bundle.
+
+on:
+  push:
+    branches: [main]
+    paths: ["feed/**", ".github/workflows/build-msi-feed.yml"]
+  schedule:
+    - cron: "41 6 * * 1"     # weekly, to catch a source that drifts on its own
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: feed/go.sum
+
+      - name: Vet and build
+        run: cd feed && go vet ./... && go build -o /tmp/feed .
+
+      - name: Fetch every source
+        run: |
+          /tmp/feed -check | tee /tmp/check.txt
+          if grep -q FAILED /tmp/check.txt; then
+            echo "::error::a parser stopped working — see the run log"
+            exit 1
+          fi
+          if grep -qE '^\s+\S+\s+stale' /tmp/check.txt; then
+            echo "::warning::a coordinator is publishing stale data"
+          fi
+          { echo '### Sources'; echo '```'; cat /tmp/check.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"

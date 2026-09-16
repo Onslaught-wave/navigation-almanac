@@ -1,5 +1,5 @@
-# The built binary; CI and cron build it from source.
-feed
-
-# The build key. Never committed — it is the same key the app carries.
+# The build key, the compiled binary, the built feed and the publish
+# staging area. None of them belong in the repository.
 .navwarn-key
+.bin
+.published

@@ -1,5 +1,6 @@
-# Built hourly by CI and deployed straight to Pages — never committed.
-# It is AES-GCM output, so every build would be a fresh incompressible
-# 200 KB object in the history, forever.
+# Built by cron on srv-int and force-pushed to the gh-pages branch —
+# never committed to main. It is AES-GCM output, so every build would be a
+# fresh incompressible 200 KB object in the history, forever.
 msi/
+.publish/
 _site/
