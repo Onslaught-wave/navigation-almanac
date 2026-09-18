@@ -238,9 +238,45 @@ type fix struct {
 // Values are only taken in pairs, and only when a N/S is immediately followed
 // by an E/W: a lone latitude in these messages is far more often a chart
 // number, a bearing or a depth than half a position.
+// Australia sometimes states an area as two ranges rather than as corners —
+// "BOUNDED BY 38-23S TO 38-37S AND 148-25E TO 148-37E". Pairing values in
+// sequence finds only one corner of that box, so a hazard area would be drawn
+// as a single point. This expands the form into all four corners.
+var reBoundingBox = regexp.MustCompile(
+	`(?i)(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([NS])\s+TO\s+(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([NS])` +
+		`\s+AND\s+(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([EW])\s+TO\s+(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([EW])`)
+
+func boundingBoxCorners(text string) [][2]float64 {
+	var out [][2]float64
+	for _, m := range reBoundingBox.FindAllStringSubmatch(text, -1) {
+		value := func(deg, min, hemi string) float64 {
+			d, _ := strconv.ParseFloat(deg, 64)
+			v, _ := strconv.ParseFloat(strings.Replace(min, ",", ".", 1), 64)
+			d += v / 60
+			if h := strings.ToUpper(hemi); h == "S" || h == "W" {
+				d = -d
+			}
+			return d
+		}
+		lats := []float64{value(m[1], m[2], m[3]), value(m[4], m[5], m[6])}
+		lons := []float64{value(m[7], m[8], m[9]), value(m[10], m[11], m[12])}
+		for _, lat := range lats {
+			for _, lon := range lons {
+				if lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 {
+					out = append(out, [2]float64{round6(lat), round6(lon)})
+				}
+			}
+		}
+	}
+	return out
+}
+
 func parseCoordinates(text string) [][2]float64 {
 	if text == "" {
 		return nil
+	}
+	if corners := boundingBoxCorners(text); len(corners) > 0 {
+		return corners
 	}
 	for _, attempt := range []struct {
 		re      *regexp.Regexp
