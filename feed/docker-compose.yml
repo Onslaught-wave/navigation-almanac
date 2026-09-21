@@ -1,0 +1,39 @@
+# Publishes the navigational-warnings feed once an hour.
+#
+#   cd /srv/navigation-almanac
+#   printf '%s' 'THE-64-HEX-KEY' > feed/navwarn.key && chmod 600 feed/navwarn.key
+#   ssh-keygen -t ed25519 -N '' -f feed/deploy_key      # public half -> GitHub
+#   docker compose -f feed/docker-compose.yml up -d --build
+#
+# Nothing else on the server is configured: no cron entry, no Go toolchain,
+# and the container comes back on its own after a reboot.
+
+services:
+  feed:
+    build: .
+    image: navwarn-feed
+    container_name: navwarn-feed
+    restart: unless-stopped
+    environment:
+      REPO_URL: git@github.com:Onslaught-wave/navigation-almanac.git
+      BRANCH: gh-pages
+      INTERVAL: 3600          # 0 makes it a one-shot, for host cron instead
+    secrets:
+      - navwarn_key
+    volumes:
+      # The clone and the "already published" marker, so a restart neither
+      # re-clones nor republishes a feed that has not changed.
+      - navwarn-data:/data
+      # Write access to the repository. A deploy key scoped to this one
+      # repository is the right credential here — not an account-wide token.
+      - ./deploy_key:/key:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+secrets:
+  navwarn_key:
+    file: ./navwarn.key
+
+volumes:
+  navwarn-data:

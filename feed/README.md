@@ -31,18 +31,37 @@ replaces it.
 
 ## How it is published
 
-`feed/deploy.sh` runs from cron on srv-int. It pulls `main` for the static
-pages, builds the bundle, and force-pushes everything as a **single-commit
+Everything runs in one container on the server. It pulls `main` for the static
+pages, builds the bundle, and force-pushes the lot as a **single-commit
 `gh-pages` branch** — rebuilt from scratch each run, so the published branch
 never accumulates history. GitHub Pages serves that branch.
 
 ```
-7 * * * *  cd /srv/navigation-almanac && NAVWARN_KEY=$(cat feed/.navwarn-key) feed/deploy.sh >> /var/log/navwarn.log 2>&1
+cd /srv/navigation-almanac
+printf '%s' 'THE-64-HEX-KEY' > feed/navwarn.key && chmod 600 feed/navwarn.key
+ssh-keygen -t ed25519 -N '' -f feed/deploy_key    # public half → GitHub deploy keys
+docker compose -f feed/docker-compose.yml up -d --build
 ```
 
-It stops before pushing when the warnings are unchanged, so Pages is only
-rebuilt when there is something new. Settings → Pages → Source must be
-**Deploy from a branch → `gh-pages` → `/`**.
+That is the whole server setup: no Go toolchain, no cron entry, and the
+container comes back by itself after a reboot. It publishes hourly, logs to
+`docker logs navwarn-feed`, and stops before pushing when the warnings have
+not changed, so Pages is not rebuilt for an identical site.
+
+Settings → Pages → Source must be **Deploy from a branch → `gh-pages` → `/`**,
+and the deploy key needs *Allow write access*. A key scoped to this one
+repository is the right credential here — not an account-wide token.
+
+To run it from host cron or a systemd timer instead, set `INTERVAL: 0` and the
+container becomes a one-shot:
+
+```
+7 * * * *  docker run --rm -v navwarn-data:/data -v /srv/navigation-almanac/feed/deploy_key:/key:ro \
+             -e NAVWARN_KEY="$(cat /srv/navigation-almanac/feed/navwarn.key)" navwarn-feed
+```
+
+`deploy.sh` is the same sequence without the container, for a host that
+already has Go.
 
 Anything committed to `main` — a site edit, the mirrored TLE set — goes live on
 the next run rather than immediately.
