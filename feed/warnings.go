@@ -378,8 +378,35 @@ func newWarning(source, area, number string, year int, issued, text, u string) W
 	// Six coordinators publish no date field at all and only carry the
 	// broadcast date-time group inside the message, so the body is searched
 	// when the source itself gave nothing.
-	return Warning{source, area, number, year, issued, normalizeIssued(issued, body, year),
-		body, coords, u}
+	return Warning{source, normalizeArea(area), number, year, issued,
+		normalizeIssued(issued, body, year), body, coords, u}
+}
+
+// normalizeArea reduces a NAVAREA to its roman numeral alone.
+//
+// Coordinators do not agree on how to write their own area: most publish the
+// bare numeral, France names its ocean series "NAVAREA II", and NGA writes
+// "NAVAREA IV". Left alone, the same ocean area would appear two or three
+// times in the app's list under spellings a navigator would have to reconcile.
+// Only a genuine numeral is stripped — a coastal series whose name merely
+// starts with the word (there is none today, but the sources change) keeps it.
+func normalizeArea(area string) string {
+	trimmed := strings.TrimSpace(area)
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "NAVAREA"))
+	if rest == trimmed || !isRomanArea(rest) {
+		return trimmed
+	}
+	return rest
+}
+
+// isRomanArea reports whether s is one of the 21 NAVAREA numerals.
+func isRomanArea(s string) bool {
+	switch s {
+	case "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
+		"XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX", "XXI":
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------- France (II + coastal)
