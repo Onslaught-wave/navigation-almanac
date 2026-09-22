@@ -43,11 +43,15 @@ var months = map[string]time.Month{
 // clock is time.Now, replaceable in tests.
 var clock = time.Now
 
-// How far ahead of the build a stamp may sit and still be believed. A message
-// broadcast an hour before the build can legitimately read as slightly ahead
-// once clocks and rounding are allowed for; a day and a half is generous
-// enough to never reject a real one.
-const futureTolerance = 36 * time.Hour
+// How far ahead of the build a stamp may sit and still be believed.
+//
+// Publication stamps are in UTC, so the only honest reason for one to be ahead
+// of us is a coordinator's clock running fast or a message published while the
+// build was already running — minutes, not hours. Two hours is generous for
+// both. It was a day and a half at first, which let an Estonian firing-practice
+// window through: twenty-one hours ahead, and shown in "Latest" as due
+// tomorrow.
+const futureTolerance = 2 * time.Hour
 
 // normalizeIssued turns whatever a source gave into RFC 3339 UTC.
 //

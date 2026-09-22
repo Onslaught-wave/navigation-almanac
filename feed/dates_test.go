@@ -60,15 +60,37 @@ func TestAFutureDateIsRefused(t *testing.T) {
 	}
 }
 
-// The tolerance exists so that a message broadcast just before the build is
-// still believed once clocks and rounding are allowed for.
+// The tolerance exists for a coordinator's clock running fast, or a message
+// published while the build was already running — minutes, not hours.
 func TestAStampJustAheadIsStillBelieved(t *testing.T) {
 	withClock(t, "2026-09-22T12:00:00Z")
-	if got := normalizeIssued("2026-09-22T23:00:00Z", "", 2026); got != "2026-09-22T23:00:00Z" {
-		t.Errorf("an hours-ahead stamp must survive, got %q", got)
+	if got := normalizeIssued("2026-09-22T13:00:00Z", "", 2026); got != "2026-09-22T13:00:00Z" {
+		t.Errorf("an hour ahead must survive, got %q", got)
 	}
-	if got := normalizeIssued("2026-09-25T00:00:00Z", "", 2026); got != "" {
-		t.Errorf("three days ahead is not rounding, got %q", got)
+	// Twenty-one hours is the Estonian firing-practice window that got through
+	// when the tolerance was a day and a half.
+	if got := normalizeIssued("2026-09-23T09:00:00Z", "", 2026); got != "" {
+		t.Errorf("twenty-one hours ahead is not clock skew, got %q", got)
+	}
+}
+
+// The Baltic page relays other countries' warnings verbatim, and those state
+// an exercise window in the same shape as a broadcast stamp.
+func TestSwedenIgnoresTheTailOfATimeRange(t *testing.T) {
+	estonian := "ESTONIAN NAV WARN\n 155/26\nGULF OF FINLAND.\n" +
+		"230600-231200 UTC SEP\nFIRING PRACTICE AREA 1B"
+	if got := swedenDTG(estonian); got != "" {
+		t.Errorf("a firing window is not a publication stamp, got %q", got)
+	}
+	// A real stamp on its own is still taken.
+	swedish := "SWEDISH NAV WARN\n 042/26\n130830 UTC SEP 26\nSOUTHERN BALTIC."
+	if got := swedenDTG(swedish); got != "130830 UTC SEP 26" {
+		t.Errorf("swedenDTG = %q, want the message's own stamp", got)
+	}
+	// And a stamp that follows a range elsewhere in the message is reachable.
+	both := "230600-231200 UTC SEP\nISSUED 210900 UTC SEP 26"
+	if got := swedenDTG(both); got != "210900 UTC SEP 26" {
+		t.Errorf("swedenDTG = %q, want the stamp after the range", got)
 	}
 }
 

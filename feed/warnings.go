@@ -362,24 +362,49 @@ func yearFrom(ref string) int {
 }
 
 func newWarning(source, area, number string, year int, issued, text, u string) Warning {
+	// Cleaned before anything reads it, positions included: a non-breaking
+	// space between a latitude and a longitude is not whitespace to a regular
+	// expression, and the position would be missed.
+	body := cleanText(text)
 	// Always an array, never null: the client decodes this field unconditionally
 	// and a nil slice would marshal to JSON null.
 	// Merging a warning's language variants can repeat the same position, and
 	// two identical markers on a chart are noise.
 	coords := [][2]float64{}
 	seen := map[[2]float64]bool{}
-	for _, p := range parseCoordinates(text) {
+	for _, p := range parseCoordinates(body) {
 		if !seen[p] {
 			seen[p] = true
 			coords = append(coords, p)
 		}
 	}
-	body := strings.TrimSpace(text)
 	// Six coordinators publish no date field at all and only carry the
 	// broadcast date-time group inside the message, so the body is searched
 	// when the source itself gave nothing.
 	return Warning{source, normalizeArea(area), number, year, issued,
 		normalizeIssued(issued, body, year), body, coords, u}
+}
+
+// cleanText puts a message into the one form the app can display and search.
+//
+// Four coordinators publish CRLF — Japan, Pakistan, Peru and Sweden, 294
+// warnings between them — and a stray carriage return is not whitespace to
+// Foundation's `.whitespaces`, so it survives trimming and is drawn as part of
+// the text. Non-breaking spaces are worse than cosmetic: they are not
+// whitespace to a regular expression either, so a position written with one
+// between latitude and longitude is simply not found, and a reader searching
+// for a phrase that contains one never matches it.
+var cleanReplacer = strings.NewReplacer(
+	"\r\n", "\n",
+	"\r", "\n",
+	" ", " ", // non-breaking space
+	" ", " ", // figure space
+	" ", " ", // narrow no-break space
+	"\uFEFF", "", // byte-order mark, seen mid-document in scraped pages
+)
+
+func cleanText(text string) string {
+	return strings.TrimSpace(cleanReplacer.Replace(text))
 }
 
 // normalizeArea reduces a NAVAREA to its roman numeral alone.
@@ -650,8 +675,6 @@ func fetchSweden(c *Client) ([]Warning, error) {
 	reSection := regexp.MustCompile(`<div\s+id="display-area-\d+"`)
 	reHeading := regexp.MustCompile(`(?s)<h\d[^>]*>(.*?)</h\d>`)
 	reWarn := regexp.MustCompile(`([A-Z][A-Z ]*NAV WARN)\s*(\d+/\d+)`)
-	// "130830 UTC SEP 26" or "281030 UTC AUG" — the year is often absent.
-	reSwedenDTG := regexp.MustCompile(`(?i)\b\d{6}\s*UTC\s+[A-Z]{3}(?:\s+\d{2})?\b`)
 
 	var out []Warning
 	for _, page := range pages {
@@ -694,7 +717,7 @@ func fetchSweden(c *Client) ([]Warning, error) {
 					next.text = chunk
 				}
 				if next.issued == "" {
-					if m := reSwedenDTG.FindString(chunk); m != "" {
+					if m := swedenDTG(chunk); m != "" {
 						next.issued = m
 					}
 				}
@@ -714,6 +737,39 @@ func fetchSweden(c *Client) ([]Warning, error) {
 		return nil, fmt.Errorf("sweden: no warnings matched")
 	}
 	return out, nil
+}
+
+// "130830 UTC SEP 26" or "281030 UTC AUG" — the year is often absent.
+var reSwedenDTG = regexp.MustCompile(`(?i)\b\d{6}\s*UTC\s+[A-Z]{3}(?:\s+\d{2})?\b`)
+
+// swedenDTG finds the date-time group a message was broadcast with, and only
+// that.
+//
+// The page relays Danish, Estonian, German and Polish warnings verbatim, and
+// those state the window an exercise runs in the same shape as a broadcast
+// stamp: "230600-231200 UTC SEP" is a firing practice on the 23rd, not a
+// message published at noon that day. Taking the tail of one put a warning in
+// the app's "Latest" list dated twenty-one hours into the future.
+//
+// A group preceded by "<six digits>-" is the closing half of a range, so it is
+// skipped. RE2 has no lookbehind, hence the manual check.
+func swedenDTG(chunk string) string {
+	for _, at := range reSwedenDTG.FindAllStringIndex(chunk, -1) {
+		if at[0] >= 7 && chunk[at[0]-1] == '-' && isDigits(chunk[at[0]-7:at[0]-1]) {
+			continue
+		}
+		return chunk[at[0]:at[1]]
+	}
+	return ""
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // ---------------------------------------------------------------- Norway (XIX)
