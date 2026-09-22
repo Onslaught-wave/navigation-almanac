@@ -37,9 +37,20 @@ if [ -z "$beat" ]; then
 fi
 
 age=$(( $(date -u '+%s') - beat ))
-if [ "$age" -gt "$STALE_AFTER" ]; then
-  log "last publish ${age}s ago, over the ${STALE_AFTER}s limit — restarting"
-  docker restart "$NAME" >/dev/null && log "restarted"
-else
+if [ "$age" -le "$STALE_AFTER" ]; then
   log "healthy, last publish ${age}s ago"
+  exit 0
+fi
+
+# A restart fixes a wedged loop. It does not fix an expired token, a revoked
+# one, or a source that has changed shape — and those look identical from
+# here. So say what the container last complained about rather than
+# restarting in a circle and calling it handled.
+log "last publish ${age}s ago, over the ${STALE_AFTER}s limit"
+docker logs --tail 40 "$NAME" 2>&1 | grep -iE "error|failed|denied|403|401" | tail -3 \
+  | sed 's/^/    container said: /'
+if [ "$age" -gt $((3 * STALE_AFTER)) ]; then
+  log "restarting has not helped for $((age / 3600))h — this needs a human"
+else
+  docker restart "$NAME" >/dev/null && log "restarted"
 fi

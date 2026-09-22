@@ -92,11 +92,15 @@ publish() {
 if [ "$INTERVAL" -gt 0 ] 2>/dev/null; then
   log "running every ${INTERVAL}s"
   while :; do
-    publish || log "run failed; keeping the previously published feed"
-    # A heartbeat the host can see. `restart: unless-stopped` only notices a
-    # process that exits — it cannot tell a wedged loop from a working one,
-    # and this is what lets the watchdog tell the difference.
-    date -u '+%s' > /data/heartbeat
+    # The heartbeat is written only when a cycle actually succeeds. Writing it
+    # unconditionally would hide exactly the failures worth catching — an
+    # expired git token, for instance, leaves the loop running happily while
+    # nothing reaches the app.
+    if publish; then
+      date -u '+%s' > /data/heartbeat
+    else
+      log "run failed; keeping the previously published feed and the old heartbeat"
+    fi
     sleep "$INTERVAL"
   done
 else
