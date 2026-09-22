@@ -40,14 +40,32 @@ var months = map[string]time.Month{
 	"OCT": time.October, "NOV": time.November, "DEC": time.December,
 }
 
+// clock is time.Now, replaceable in tests.
+var clock = time.Now
+
+// How far ahead of the build a stamp may sit and still be believed. A message
+// broadcast an hour before the build can legitimately read as slightly ahead
+// once clocks and rounding are allowed for; a day and a half is generous
+// enough to never reject a real one.
+const futureTolerance = 36 * time.Hour
+
 // normalizeIssued turns whatever a source gave into RFC 3339 UTC.
 //
 // `raw` is the source's own stamp, `text` the warning body to fall back on,
 // and `year` the year the warning belongs to — needed because a date-time
 // group carries no century, and some carry no year at all.
+//
+// A date in the future is refused. Messages state operational times as well as
+// publication times — "DAILY 15 SEP TO 15 OCT", "231100Z TO 231700Z SEP" — and
+// a scan of the body can pick up the wrong one. Whatever the cause, a
+// publication date that has not happened yet means the source was not
+// understood, and the app would show it under "Latest" as due in three weeks.
+// An empty date is honest; the source's own stamp is published verbatim
+// alongside it either way.
 func normalizeIssued(raw, text string, year int) string {
+	horizon := clock().UTC().Add(futureTolerance)
 	for _, candidate := range []string{raw, text} {
-		if t, ok := parseAnyDate(candidate, year); ok {
+		if t, ok := parseAnyDate(candidate, year); ok && t.UTC().Before(horizon) {
 			return t.UTC().Format(time.RFC3339)
 		}
 	}

@@ -987,11 +987,21 @@ func fetchJapan(c *Client) ([]Warning, error) {
 					text = full
 				}
 			}
+			// Every detail page stamps itself "NO.26-0392 Date:2026/08/27 12
+			// UTC". Taking it is not a nicety: left to scan the body, the
+			// normaliser reads an operational time out of the message instead
+			// — "2300Z TO 0900Z DAILY 31 AUG TO 29 SEP" — and eleven of the
+			// thirty-four warnings came out on the wrong day, two of them by
+			// more than a month, one of them dated in the future.
+			issued := ""
+			if d := reJapanDate.FindStringSubmatch(text); d != nil {
+				issued = d[1]
+			}
 			if m.Category != "" {
 				text = m.Category + "\n" + text
 			}
 			out = append(out, newWarning("japan", "XI",
-				fmt.Sprintf("%s/%02d", m.Number, y%100), y, "", text, url))
+				fmt.Sprintf("%s/%02d", m.Number, y%100), y, issued, text, url))
 		}
 	}
 	if len(out) == 0 {
@@ -999,6 +1009,9 @@ func fetchJapan(c *Client) ([]Warning, error) {
 	}
 	return out, nil
 }
+
+// "NO.26-0392 Date:2026/08/27 12 UTC" — the stamp on every Japanese page.
+var reJapanDate = regexp.MustCompile(`Date:\s*(\d{4}/\d{2}/\d{2}\s+\d{1,2})\s*UTC`)
 
 var reBlankLines = regexp.MustCompile(`\n\s*\n+`)
 
