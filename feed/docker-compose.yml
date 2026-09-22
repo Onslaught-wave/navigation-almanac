@@ -1,12 +1,15 @@
 # Publishes the navigational-warnings feed once an hour.
 #
 #   cd /srv/navigation-almanac
-#   printf '%s' 'THE-64-HEX-KEY' > feed/navwarn.key && chmod 600 feed/navwarn.key
-#   ssh-keygen -t ed25519 -N '' -f feed/deploy_key      # public half -> GitHub
+#   printf '%s' 'THE-64-HEX-KEY'  > feed/navwarn.key && chmod 600 feed/navwarn.key
+#   printf '%s' 'github_pat_...'  > feed/git.token   && chmod 600 feed/git.token
 #   docker compose -f feed/docker-compose.yml up -d --build
 #
-# Nothing else on the server is configured: no cron entry, no Go toolchain,
-# and the container comes back on its own after a reboot.
+# Nothing else on the server is configured: no cron entry, no Go toolchain, and
+# `restart: unless-stopped` brings the container back after a reboot.
+#
+# Both secrets are mounted as files rather than passed as environment
+# variables, which anything able to inspect the container can read.
 
 services:
   feed:
@@ -15,18 +18,16 @@ services:
     container_name: navwarn-feed
     restart: unless-stopped
     environment:
-      REPO_URL: git@github.com:Onslaught-wave/navigation-almanac.git
+      REPO_URL: https://github.com/Onslaught-wave/navigation-almanac.git
       BRANCH: gh-pages
       INTERVAL: 3600          # 0 makes it a one-shot, for host cron instead
     secrets:
-      - navwarn_key
+      - navwarn_key           # signs the bundle; must match the key in the app
+      - git_token             # pushes the published branch, via ~/.netrc
     volumes:
       # The clone and the "already published" marker, so a restart neither
       # re-clones nor republishes a feed that has not changed.
       - navwarn-data:/data
-      # Write access to the repository. A deploy key scoped to this one
-      # repository is the right credential here — not an account-wide token.
-      - ./deploy_key:/key:ro
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -34,6 +35,8 @@ services:
 secrets:
   navwarn_key:
     file: ./navwarn.key
+  git_token:
+    file: ./git.token
 
 volumes:
   navwarn-data:

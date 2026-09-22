@@ -24,10 +24,19 @@ fi
 [ -n "${NAVWARN_KEY:-}" ] || { log "error: NAVWARN_KEY is not set"; exit 1; }
 export NAVWARN_KEY
 
-if [ -r /key ]; then
-  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-  cp /key "$HOME/.ssh/id_ed25519" && chmod 600 "$HOME/.ssh/id_ed25519"
-  ssh-keyscan -t rsa,ecdsa,ed25519 github.com >"$HOME/.ssh/known_hosts" 2>/dev/null
+# Git authenticates over HTTPS with a token written to ~/.netrc. The token
+# arrives as a mounted secret rather than an environment variable, because a
+# variable is readable by anything that can inspect the container — and it is
+# never written into the repository or the image.
+if [ -z "${GIT_TOKEN:-}" ] && [ -r /run/secrets/git_token ]; then
+  GIT_TOKEN=$(cat /run/secrets/git_token)
+fi
+if [ -n "${GIT_TOKEN:-}" ]; then
+  umask 077
+  printf 'machine github.com\n  login x-access-token\n  password %s\n' "$GIT_TOKEN" \
+    > "$HOME/.netrc"
+  chmod 600 "$HOME/.netrc"
+  unset GIT_TOKEN
 fi
 
 git config --global user.name  "navigation-almanac"
