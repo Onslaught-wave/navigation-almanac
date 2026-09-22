@@ -93,6 +93,10 @@ if [ "$INTERVAL" -gt 0 ] 2>/dev/null; then
   log "running every ${INTERVAL}s"
   while :; do
     publish || log "run failed; keeping the previously published feed"
+    # A heartbeat the host can see. `restart: unless-stopped` only notices a
+    # process that exits — it cannot tell a wedged loop from a working one,
+    # and this is what lets the watchdog tell the difference.
+    date -u '+%s' > /data/heartbeat
     sleep "$INTERVAL"
   done
 else
