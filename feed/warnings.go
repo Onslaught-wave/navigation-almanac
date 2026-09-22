@@ -987,6 +987,14 @@ func fetchChile(c *Client) ([]Warning, error) {
 	const u = "https://www.shoa.cl/php/radioAvisosPDF.php?documento=NAVAREA&tipo=3"
 	body, err := c.Get(u, "")
 	if err != nil {
+		// shoa.cl answers 403 to datacenter addresses while serving the same
+		// URL normally from a residential one. Saying so keeps a blocked
+		// build host from reading like a broken parser.
+		if strings.Contains(err.Error(), "HTTP 403") {
+			return nil, fmt.Errorf("chile: shoa.cl refuses this host (HTTP 403). " +
+				"It serves the same URL from a residential address, so this is " +
+				"address-based blocking rather than a parser fault")
+		}
 		return nil, err
 	}
 	if !bytes.HasPrefix(body, []byte("%PDF")) {
