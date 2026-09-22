@@ -77,11 +77,14 @@ type payload struct {
 
 func main() {
 	var (
-		out    = flag.String("out", "../msi", "directory to publish into")
-		only   = flag.String("only", "", "comma-separated source names")
-		keyHex = flag.String("key", "", "hex key; defaults to $NAVWARN_KEY")
-		genkey = flag.Bool("genkey", false, "print a fresh key and exit")
-		check  = flag.Bool("check", false, "fetch and report, publish nothing")
+		out     = flag.String("out", "../msi", "directory to publish into")
+		only    = flag.String("only", "", "comma-separated source names")
+		keyHex  = flag.String("key", "", "hex key; defaults to $NAVWARN_KEY")
+		genkey  = flag.Bool("genkey", false, "print a fresh key and exit")
+		check   = flag.Bool("check", false, "fetch and report, publish nothing")
+		proxies = flag.String("proxies", "",
+			"file of host:port proxies to retry a refusal through; "+
+				"defaults to $NAVWARN_PROXIES, then to the built-in list")
 	)
 	flag.Parse()
 
@@ -90,7 +93,7 @@ func main() {
 		return
 	}
 
-	warnings, status := collect(*only)
+	warnings, status := collect(*only, loadProxies(*proxies))
 	report(status)
 
 	if *check {
@@ -147,7 +150,7 @@ func generateKey() {
 }
 
 // collect runs every parser, keeping the failures.
-func collect(only string) ([]Warning, map[string]SourceStatus) {
+func collect(only string, proxies []string) ([]Warning, map[string]SourceStatus) {
 	wanted := map[string]bool{}
 	for _, name := range strings.Split(only, ",") {
 		if name = strings.TrimSpace(name); name != "" {
@@ -155,7 +158,7 @@ func collect(only string) ([]Warning, map[string]SourceStatus) {
 		}
 	}
 
-	client := NewClient()
+	client := NewClient().WithProxies(proxies)
 	status := map[string]SourceStatus{}
 	var all []Warning
 	thisYear := time.Now().UTC().Year()
@@ -188,6 +191,14 @@ func collect(only string) ([]Warning, map[string]SourceStatus) {
 			Areas: src.Areas, NewestYear: newest}
 		fmt.Printf("  %-11s %-6s %5d warnings, newest %d  (%s)\n",
 			src.Name, state, len(got), newest, time.Since(started).Round(time.Millisecond))
+	}
+
+	// A document that reached the feed by way of a stranger's machine is said
+	// so out loud. It is fetched over HTTPS with the certificate verified, so
+	// the proxy could not have altered it — but where it came from still
+	// belongs in the record.
+	for _, note := range client.ProxyNotes {
+		fmt.Printf("  %-11s %s\n", "proxy", note)
 	}
 
 	if len(wanted) == 0 {

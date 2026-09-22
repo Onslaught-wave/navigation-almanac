@@ -39,6 +39,19 @@ if [ -n "${GIT_TOKEN:-}" ]; then
   unset GIT_TOKEN
 fi
 
+# A coordinator that refuses this host is retried through a public proxy; the
+# binary carries a list, but those die constantly. Dropping a fresh one into
+# the data volume overrides it without rebuilding the image:
+#
+#   docker cp working.txt navwarn-feed:/data/proxies.txt
+#
+# Regenerate with feed/tools/check-proxies.sh, run on this host.
+if [ -z "${NAVWARN_PROXIES:-}" ] && [ -r /data/proxies.txt ]; then
+  NAVWARN_PROXIES=/data/proxies.txt
+  export NAVWARN_PROXIES
+  log "using the proxy list at /data/proxies.txt"
+fi
+
 git config --global user.name  "navigation-almanac"
 git config --global user.email "noreply@localhost"
 git config --global --add safe.directory "$WORK"

@@ -98,10 +98,27 @@ var Sources = []Source{
 
 // Client is a retrying HTTP client. Several of these national servers drop
 // connections at random, and a single miss would blank out a whole NAVAREA.
-type Client struct{ http *http.Client }
+type Client struct {
+	http *http.Client
+	// Used only when a coordinator refuses this host outright; see proxy.go.
+	proxies         []string
+	lastGoodProxy   string
+	proxiesHopeless map[string]bool
+	// Which requests were served through a proxy, for the build log. A
+	// document that reached the feed by way of a stranger's machine should be
+	// traceable to it.
+	ProxyNotes []string
+}
 
 func NewClient() *Client {
 	return &Client{http: &http.Client{Timeout: 60 * time.Second}}
+}
+
+// WithProxies returns the same client set up to retry a refusal through the
+// given proxy list.
+func (c *Client) WithProxies(proxies []string) *Client {
+	c.proxies = proxies
+	return c
 }
 
 // Post sends a form body — one coordinator's index is only reachable that way.
@@ -116,49 +133,88 @@ func (c *Client) Get(rawURL string, accept string) ([]byte, error) {
 func (c *Client) do(method, rawURL, body, accept, referer string) ([]byte, error) {
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
-		var reader io.Reader
-		if body != "" {
-			reader = strings.NewReader(body)
-		}
-		req, err := http.NewRequest(method, rawURL, reader)
-		if err != nil {
-			return nil, err
-		}
-		if body != "" {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-		if referer != "" {
-			req.Header.Set("Referer", referer)
-		}
-		req.Header.Set("User-Agent", userAgent)
-		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-		if accept == "" {
-			accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-		}
-		req.Header.Set("Accept", accept)
-
-		resp, err := c.http.Do(req)
+		data, err := requestOnce(c.http, method, rawURL, body, accept, referer)
 		if err != nil {
 			last = err
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			last = err
-			continue
+		return data, nil
+	}
+	// A refusal is about where the request came from, not about the request.
+	// Retrying it from somewhere else is the only thing that can help, and
+	// retrying anything else that way would buy nothing.
+	if isRefusal(last) && len(c.proxies) > 0 {
+		data, proxy, err := c.viaProxy(method, rawURL, body, accept, referer)
+		if err == nil {
+			c.ProxyNotes = append(c.ProxyNotes,
+				fmt.Sprintf("%s served via %s after %v", hostOf(rawURL), proxy, last))
+			return data, nil
 		}
-		if resp.StatusCode != http.StatusOK {
-			last = fmt.Errorf("HTTP %d for %s", resp.StatusCode, rawURL)
-			continue
-		}
-		if len(body) == 0 {
-			last = fmt.Errorf("empty response from %s", rawURL)
-			continue
-		}
-		return body, nil
+		return nil, fmt.Errorf("%v; %v", last, err)
 	}
 	return nil, last
+}
+
+// isRefusal reports whether the server turned this host away rather than
+// failing to answer. 403 is what SHOA returns; 451 is the other status a
+// server uses to say "not to you".
+func isRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 403") || strings.Contains(msg, "HTTP 451")
+}
+
+func hostOf(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return rawURL
+}
+
+// requestOnce is one attempt, over whichever client it is handed — the direct
+// one or a proxied one. Keeping it shared is the point: a document fetched
+// through a proxy is fetched with exactly the same headers as one fetched
+// directly, so the two paths cannot drift apart.
+func requestOnce(client *http.Client, method, rawURL, body, accept, referer string) ([]byte, error) {
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, rawURL, reader)
+	if err != nil {
+		return nil, err
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	if accept == "" {
+		accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	}
+	req.Header.Set("Accept", accept)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d for %s", resp.StatusCode, rawURL)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty response from %s", rawURL)
+	}
+	return data, nil
 }
 
 // ---------------------------------------------------------------- text and positions
@@ -1084,12 +1140,16 @@ func fetchChile(c *Client) ([]Warning, error) {
 	body, err := c.Get(u, "")
 	if err != nil {
 		// shoa.cl answers 403 to datacenter addresses while serving the same
-		// URL normally from a residential one. Saying so keeps a blocked
-		// build host from reading like a broken parser.
+		// URL normally from a residential one. Reaching it is the whole reason
+		// proxy.go exists, so by the time this is seen the proxy list has been
+		// tried too and is dead or exhausted — which is the thing to go and
+		// fix, and the message has to say so rather than read like a parser
+		// fault.
 		if strings.Contains(err.Error(), "HTTP 403") {
-			return nil, fmt.Errorf("chile: shoa.cl refuses this host (HTTP 403). " +
-				"It serves the same URL from a residential address, so this is " +
-				"address-based blocking rather than a parser fault")
+			return nil, fmt.Errorf("chile: shoa.cl refuses this host (HTTP 403) and no "+
+				"proxy got through either. It serves the same URL from a residential "+
+				"address, so this is address-based blocking rather than a parser fault; "+
+				"refresh the proxy list with tools/check-proxies.sh. (%v)", err)
 		}
 		return nil, err
 	}
