@@ -100,10 +100,36 @@ publish() {
   printf '%s' "$content" > "$marker"
   count=$(sed -n 's/.*"warnings": *\([0-9]*\).*/\1/p' "$WORK/msi/manifest.json" | head -1)
   log "published ${count:-?} warnings to $BRANCH"
+
+  # The one-commit branch is what keeps this repository from growing without
+  # bound. The bundle is AES output: incompressible, and different on every
+  # build, so committing it in the ordinary way would add a permanent quarter
+  # of a megabyte every hour, around 1.7 GB a year. Rebuilding the branch from
+  # scratch instead leaves the old blob unreachable, and the host collects it.
+  #
+  # That invariant lives in a comment above, and a comment has to be read. So
+  # check_branch_depth checks it as well, once a day.
+}
+
+# check_branch_depth reports how long the published branch's history is, using
+# a shallow probe so it costs one object rather than the whole branch.
+check_branch_depth() {
+  probe=/data/depth-probe
+  rm -rf "$probe"
+  if git clone --quiet --depth 2 --branch "$BRANCH" "$REPO_URL" "$probe" 2>/dev/null; then
+    depth=$(git -C "$probe" rev-list --count HEAD 2>/dev/null || echo 1)
+    if [ "${depth:-1}" -gt 1 ]; then
+      log "warning: $BRANCH carries $depth commits, expected 1 — the publish step is"
+      log "         no longer rebuilding the branch, and the repository will grow by"
+      log "         about 245 KB every hour. See the comment in publish()."
+    fi
+  fi
+  rm -rf "$probe"
 }
 
 if [ "$INTERVAL" -gt 0 ] 2>/dev/null; then
   log "running every ${INTERVAL}s"
+  cycle=0
   while :; do
     # The heartbeat is written only when a cycle actually succeeds. Writing it
     # unconditionally would hide exactly the failures worth catching — an
@@ -114,6 +140,13 @@ if [ "$INTERVAL" -gt 0 ] 2>/dev/null; then
     else
       log "run failed; keeping the previously published feed and the old heartbeat"
     fi
+    # Once at startup and once a day after that. The branch cannot start
+    # growing between two cycles without a deliberate change to this file, so
+    # checking hourly would only spend requests.
+    if [ "$((cycle % 24))" -eq 0 ]; then
+      check_branch_depth
+    fi
+    cycle=$((cycle + 1))
     sleep "$INTERVAL"
   done
 else
