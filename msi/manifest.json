@@ -1,0 +1,121 @@
+{
+ "schema": 1,
+ "build": 1006,
+ "generated_at": "2026-11-14T21:18:12Z",
+ "blob": "warnings.bin",
+ "sha256": "471df3bc65923d39f509195bddb64a91bd4245789f5ea2e7dc82190c0b6308e9",
+ "content": "256a9138cd3c7bcf47ff896f91c8c01c28b54302b1b9950e0e026972d4ae7e81",
+ "bytes": 190736,
+ "warnings": 1503,
+ "with_position": 1333,
+ "sources": {
+  "argentina": {
+   "status": "unavailable",
+   "count": 0,
+   "areas": "VI",
+   "note": "the SHN radioavisos page carries no warning list — only an explanation of the service. No listing found anywhere on hidro.gov.ar."
+  },
+  "australia": {
+   "status": "ok",
+   "count": 24,
+   "areas": "X + AUSCOAST",
+   "newest_year": 2026
+  },
+  "brazil": {
+   "status": "unavailable",
+   "count": 0,
+   "areas": "V",
+   "note": "Cloudflare managed challenge (cf-mitigated: challenge) on both www. and assets.marinha.mil.br — no header or TLS trick passes it. The data behind it is the best of any coordinator: avradio_NN.json, bilingual, with decimal coordinates, refreshed continuously. Needs a headless browser."
+  },
+  "canada": {
+   "status": "ok",
+   "count": 50,
+   "areas": "XVII, XVIII",
+   "newest_year": 2026
+  },
+  "chile": {
+   "status": "failed",
+   "count": 0,
+   "areas": "XV",
+   "note": "chile: shoa.cl refuses this host (HTTP 403) and no proxy got through either. It serves the same URL from a residential address, so this is address-based blocking rather than a parser fault; refresh th…"
+  },
+  "france": {
+   "status": "ok",
+   "count": 1095,
+   "areas": "II + French coastal",
+   "newest_year": 2026
+  },
+  "india": {
+   "status": "unavailable",
+   "count": 0,
+   "areas": "VIII",
+   "note": "the 'in-force' PDF at hydrobharat.gov.in was last modified 2025-07-07 and still says 'as on 07 Jul 2025' — over a year stale. Its text is also drawn with per-page subsetted fonts, so reading it would need a full PDF resource graph; not worth it for frozen data."
+  },
+  "japan": {
+   "status": "ok",
+   "count": 32,
+   "areas": "XI",
+   "newest_year": 2026
+  },
+  "newzealand": {
+   "status": "unavailable",
+   "count": 0,
+   "areas": "XIV",
+   "note": "Cloudflare managed challenge on maritimenz.govt.nz. Needs a headless browser."
+  },
+  "norway": {
+   "status": "ok",
+   "count": 3,
+   "areas": "XIX",
+   "newest_year": 2026
+  },
+  "pakistan": {
+   "status": "ok",
+   "count": 211,
+   "areas": "IX",
+   "newest_year": 2026
+  },
+  "peru": {
+   "status": "failed",
+   "count": 0,
+   "areas": "XVI",
+   "note": "peru: no NAVAREA XVI references found"
+  },
+  "russia": {
+   "status": "unavailable",
+   "count": 0,
+   "areas": "XIII, XX, XXI",
+   "note": "structure.mil.ru and nsr.rosatom.ru time out from here; may be reachable from other networks, untested"
+  },
+  "southafrica": {
+   "status": "unavailable",
+   "count": 0,
+   "areas": "VII",
+   "note": "SANHO's 'NAVAREA VII Messages' page is navigation only. It publishes monthly Notices to Mariners PDFs, which are a different product from radio navigational warnings — there is no warning feed to read."
+  },
+  "spain": {
+   "status": "ok",
+   "count": 14,
+   "areas": "III",
+   "newest_year": 2026
+  },
+  "sweden": {
+   "status": "ok",
+   "count": 47,
+   "areas": "Baltic NAVTEX",
+   "newest_year": 2026
+  },
+  "uk": {
+   "status": "ok",
+   "count": 27,
+   "areas": "I + UK coastal",
+   "newest_year": 2026
+  },
+  "usa": {
+   "status": "failed",
+   "count": 0,
+   "areas": "IV, XII + HYDRO",
+   "note": "HTTP 503 for https://msi.nga.mil/api/media?type=Nav%20Warnings"
+  }
+ }
+}
